@@ -118,3 +118,107 @@ def ensure_output_dir(output_path: str) -> str:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     return output_path
+
+
+def _dir_contains_target_extension(dir_path: str, extensions: list[str]) -> bool:
+    """Kiểm tra nhanh xem thư mục có chứa file thuộc extensions hay không (depth=1).
+
+    Args:
+        dir_path: Đường dẫn thư mục.
+        extensions: Danh sách extension cần kiểm tra.
+
+    Returns:
+        True nếu có ít nhất 1 file phù hợp.
+    """
+    try:
+        ext_set = {e.lower() for e in extensions}
+        # Thêm đuôi ảnh nếu extensions rỗng hoặc đang tìm folder ảnh
+        if None in extensions or any(e in {".jpg", ".png", ".bmp", ".webp"} for e in extensions):
+            ext_set.update({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"})
+
+        for item in os.listdir(dir_path):
+            if not item.startswith("."):
+                ext = os.path.splitext(item)[1].lower()
+                if ext in ext_set:
+                    return True
+    except (PermissionError, OSError):
+        pass
+    return False
+
+
+def list_path_suggestions(
+    partial_path: str,
+    extensions: list[str] | None = None,
+    max_results: int = 30,
+) -> list[str]:
+    """Gợi ý thông minh đường dẫn file/thư mục dựa trên chuỗi đang gõ.
+
+    Tự động quét và đẩy các thư mục CÓ CHỨA FILE MỤC TIÊU (.onnx, .npy, ảnh...) lên đầu danh sách gợi ý!
+
+    Args:
+        partial_path: Chuỗi đường dẫn đang gõ (ví dụ: "/home/user/mo").
+        extensions: Lọc theo extension (ví dụ: [".onnx", ".npy"]).
+                   Nếu None, hiển thị tất cả. Thư mục chứa file phù hợp sẽ được ưu tiên.
+        max_results: Số kết quả tối đa trả về.
+
+    Returns:
+        Danh sách đường dẫn gợi ý (thư mục có suffix "/").
+    """
+    if not partial_path or not partial_path.strip():
+        # Mặc định hiển thị thư mục cha (các file/folder ngang hàng với project)
+        parent_dir = os.path.dirname(os.getcwd())
+        prefix = ""
+    else:
+        partial_path = partial_path.strip()
+        partial_path = os.path.expanduser(partial_path)
+
+        if os.path.isdir(partial_path):
+            parent_dir = partial_path
+            prefix = ""
+        else:
+            parent_dir = os.path.dirname(partial_path)
+            prefix = os.path.basename(partial_path).lower()
+
+    if not os.path.isdir(parent_dir):
+        return []
+
+    try:
+        entries = sorted(os.listdir(parent_dir))
+    except PermissionError:
+        return [f"⚠️ Không có quyền truy cập: {parent_dir}"]
+
+    priority_dirs = []
+    normal_dirs = []
+    matching_files = []
+
+    for entry in entries:
+        # Bỏ qua file/thư mục ẩn (bắt đầu bằng .)
+        if entry.startswith("."):
+            continue
+
+        # Filter theo prefix đang gõ
+        if prefix and not entry.lower().startswith(prefix):
+            continue
+
+        full_path = os.path.join(parent_dir, entry)
+
+        if os.path.isdir(full_path):
+            dir_path = full_path + "/"
+            # Kiểm tra xem thư mục có chứa file mục tiêu không -> Đẩy lên ưu tiên!
+            if extensions and _dir_contains_target_extension(full_path, extensions):
+                priority_dirs.append(dir_path)
+            else:
+                normal_dirs.append(dir_path)
+        elif extensions:
+            # File: chỉ hiển thị nếu extension khớp
+            _, ext = os.path.splitext(entry)
+            if ext.lower() in extensions:
+                matching_files.append(full_path)
+        else:
+            # Không filter extension → hiển thị tất cả file
+            matching_files.append(full_path)
+
+    # Sắp xếp thứ tự ưu tiên: Thư mục chứa target files -> Các thư mục còn lại -> Các file khớp
+    ordered_suggestions = priority_dirs + normal_dirs + matching_files
+    return ordered_suggestions[:max_results]
+

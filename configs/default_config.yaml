@@ -5,8 +5,8 @@ quantization:
   # Chế độ quantize: int8, fp8, int4
   quantize_mode: "int8"
 
-  # Thuật toán calibration: minmax, entropy, max
-  calibration_method: "minmax"
+  # Thuật toán calibration: max, entropy (cho INT8/FP8) hoặc awq_clip, rtn_dq (cho INT4)
+  calibration_method: "max"
 
   # Đường dẫn output mặc định
   default_output_dir: "outputs"

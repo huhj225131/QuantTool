@@ -39,34 +39,58 @@ class QuantConfig:
     onnx_path: str = ""
     output_path: str = "outputs/model_quantized.onnx"
     quantize_mode: str = "int8"
-    calibration_method: str = "minmax"
+    calibration_method: str = "max"
     calibration_data_path: str = ""
     op_types_to_quantize: Optional[list[str]] = None
     nodes_to_exclude: list[str] = field(default_factory=list)
     use_external_data_format: bool = False
 
 
-def _load_calibration_data(data_path: str) -> dict[str, np.ndarray]:
-    """Load calibration data từ file .npy hoặc .npz.
+def _load_calibration_data(data_path: str, onnx_path: Optional[str] = None) -> dict[str, np.ndarray]:
+    """Load calibration data từ file .npy hoặc .npz và khớp key với input name của ONNX model.
 
     Args:
         data_path: Đường dẫn tới file calibration data.
+        onnx_path: Đường dẫn tới file ONNX model (để đọc chính xác tên input node).
 
     Returns:
-        Dict mapping tên input → numpy array.
+        Dict mapping tên input node chính xác → numpy array.
 
     Raises:
-        ValueError: Nếu format không hỗ trợ.
+        ValueError: Nếu format không hỗ trợ hoặc file bị lỗi.
     """
     ext = os.path.splitext(data_path)[1].lower()
 
+    # Trích xuất danh sách tên input node thực tế từ graph ONNX
+    input_names = []
+    if onnx_path and os.path.exists(onnx_path):
+        try:
+            import onnx
+            model = onnx.load(onnx_path)
+            initializer_names = {init.name for init in model.graph.initializer}
+            input_names = [inp.name for inp in model.graph.input if inp.name not in initializer_names]
+        except Exception as e:
+            logger.warning(f"Không thể đọc input names từ ONNX model: {e}")
+
+    default_input_name = input_names[0] if input_names else "input"
+
     if ext == ".npy":
         data = np.load(data_path)
-        # Trả về với key mặc định, quantize() sẽ map theo thứ tự
-        return {"input": data}
+        logger.info(f"Loaded .npy array shape {data.shape}, dtype {data.dtype}, mapping to ONNX input name '{default_input_name}'")
+        return {default_input_name: data}
+
     elif ext == ".npz":
         npz = np.load(data_path)
-        return dict(npz)
+        raw_dict = dict(npz)
+
+        # Nếu npz chỉ có 1 key và khác với ONNX input_name, re-key lại cho khớp
+        if len(raw_dict) == 1 and input_names:
+            key = list(raw_dict.keys())[0]
+            if key not in input_names:
+                logger.info(f"Re-keying npz array '{key}' -> '{default_input_name}'")
+                return {default_input_name: raw_dict[key]}
+
+        return raw_dict
     else:
         raise ValueError(f"Format calibration data không hỗ trợ: {ext}")
 
@@ -133,45 +157,45 @@ def quantize_model(
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    _log("🔄 Đang load calibration data...", 0.1)
+    _log("🔄 Đang load và ánh xạ calibration data với ONNX graph input names...", 0.1)
 
     try:
-        calib_data = _load_calibration_data(config.calibration_data_path)
+        calib_data = _load_calibration_data(config.calibration_data_path, onnx_path=config.onnx_path)
     except Exception as e:
         return {
             "success": False,
             "message": f"Lỗi khi load calibration data: {e}",
         }
 
-    _log(f"📊 Calibration data loaded: {list(calib_data.keys())}", 0.2)
+    _log(f"📊 Calibration data loaded & mapped keys: {list(calib_data.keys())}", 0.2)
     _log(f"⚙️ Bắt đầu quantize (mode={config.quantize_mode}, method={config.calibration_method})...", 0.3)
 
     start_time = time.time()
 
     try:
-        # Gọi ModelOpt quantize
-        # API: modelopt.onnx.quantization.quantize(
-        #     onnx_path, calibration_data=..., quantize_mode=...,
-        #     calibration_method=..., output_path=..., ...
-        # )
+        # Pass exact arguments matching official ModelOpt Python API:
+        # quantize(onnx_path=..., quantize_mode=..., calibration_data=calib_data_dict, calibration_method=..., output_path=...)
         quantize_kwargs = {
             "onnx_path": config.onnx_path,
             "quantize_mode": config.quantize_mode,
+            "calibration_data": calib_data,  # Dict mapping exact model input names (e.g. {"input.1": array})
+            "calibration_method": config.calibration_method,
             "output_path": config.output_path,
         }
 
-        # Calibration data – thử truyền trực tiếp
-        quantize_kwargs["calibration_data"] = calib_data
-
-        # Calibration method
-        if config.calibration_method:
-            quantize_kwargs["calibration_method"] = config.calibration_method
-
-        # Op types to quantize
+        # Op types to quantize (nếu có cấu hình riêng)
         if config.op_types_to_quantize:
             quantize_kwargs["op_types_to_quantize"] = config.op_types_to_quantize
 
-        _log("🚀 Đang chạy quantization...", 0.5)
+        _log(
+            f"🚀 Đang chạy moq.quantize("
+            f"onnx_path='{config.onnx_path}', "
+            f"quantize_mode='{config.quantize_mode}', "
+            f"calibration_data={list(calib_data.keys())}, "
+            f"calibration_method='{config.calibration_method}', "
+            f"output_path='{config.output_path}')",
+            0.5,
+        )
 
         moq.quantize(**quantize_kwargs)
 

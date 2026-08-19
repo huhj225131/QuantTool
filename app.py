@@ -32,6 +32,8 @@ def main():
         server_name=args.host,
         server_port=args.port,
         share=args.share,
+        css=getattr(app, "_custom_css", None),
+        theme=getattr(app, "_custom_theme", None),
     )
 
 

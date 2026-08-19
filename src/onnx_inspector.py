@@ -141,22 +141,21 @@ def inspect_model(onnx_path: str) -> dict[str, Any]:
     # Đếm tổng số nodes
     total_nodes = len(model.graph.node)
 
-    # Tạo yêu cầu calibration data
+    # Tạo yêu cầu calibration data (Dim 0 là batch size N - linh hoạt theo số mẫu calib)
     calib_requirements = []
     for inp_info in inputs:
+        calib_shape = list(inp_info["shape"])
+        if calib_shape:
+            calib_shape[0] = "N"
+
         calib_req = {
             "name": inp_info["name"],
-            "expected_shape": inp_info["shape"],
+            "expected_shape": calib_shape,
+            "raw_shape": inp_info["shape"],
             "expected_dtype": inp_info["dtype"],
             "numpy_dtype": str(DTYPE_TO_NUMPY.get(inp_info["dtype"], np.float32)),
-            "note": "",
+            "note": "Chiều đầu tiên (N) biểu diễn số mẫu calibration (ví dụ N=100). Các chiều còn lại cần giữ đúng cố định.",
         }
-        if inp_info["is_dynamic"]:
-            calib_req["note"] = (
-                "Shape có dynamic dimension. Bạn cần cung cấp data với "
-                "batch size cụ thể (ví dụ: thay 'batch_size' bằng số lượng "
-                "samples thực tế)."
-            )
         calib_requirements.append(calib_req)
 
     return {
@@ -209,13 +208,5 @@ def format_model_info_table(model_info: dict) -> str:
         shape_str = str(out["shape"]).replace("'", "")
         lines.append(f"| `{out['name']}` | `{shape_str}` | `{out['dtype']}` |")
     lines.append("")
-
-    # Calibration requirements
-    lines.append("### 🎯 Yêu cầu Calibration Data")
-    for req in model_info["calib_requirements"]:
-        shape_str = str(req["expected_shape"]).replace("'", "")
-        lines.append(f"- **`{req['name']}`**: shape `{shape_str}`, dtype `{req['expected_dtype']}`")
-        if req["note"]:
-            lines.append(f"  - ⚠️ {req['note']}")
 
     return "\n".join(lines)

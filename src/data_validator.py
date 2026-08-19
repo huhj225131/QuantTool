@@ -47,6 +47,9 @@ def _check_shape_compatible(
 
     mismatches = []
     for i, (exp, act) in enumerate(zip(expected_shape, actual_shape)):
+        if i == 0:
+            # Dim 0 luôn biểu diễn Batch Size / Số mẫu Calibration (N) -> Chấp nhận bất kỳ N >= 1
+            continue
         if isinstance(exp, str):
             # Dynamic dimension → chấp nhận bất kỳ giá trị
             continue

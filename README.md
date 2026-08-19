@@ -111,5 +111,5 @@ quant_tool/
 
 ## 📝 License
 
-Dự án phát hành theo giấp phép [MIT](LICENSE).
+Dự án được phát hành theo giấy phép MIT.
 

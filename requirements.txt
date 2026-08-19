@@ -1,0 +1,15 @@
+# Core UI
+gradio>=4.0
+
+# ONNX model handling
+onnx>=1.14
+onnxruntime>=1.16
+
+# Data processing
+numpy>=1.24
+
+# NVIDIA Model Optimization
+nvidia-modelopt[onnx]
+
+# Config
+pyyaml>=6.0

@@ -1,0 +1,31 @@
+# Cấu hình mặc định cho QuantTool
+# Có thể override bằng UI hoặc CLI arguments
+
+quantization:
+  # Chế độ quantize: int8, fp8, int4
+  quantize_mode: "int8"
+
+  # Thuật toán calibration: minmax, entropy, max
+  calibration_method: "minmax"
+
+  # Đường dẫn output mặc định
+  default_output_dir: "outputs"
+
+  # Sử dụng external data format cho model > 2GB
+  use_external_data_format: false
+
+  # Op types mặc định để quantize (null = tất cả)
+  op_types_to_quantize: null
+
+  # Nodes to exclude (danh sách rỗng = không loại trừ)
+  nodes_to_exclude: []
+
+server:
+  # Gradio server settings
+  server_name: "0.0.0.0"
+  server_port: 7860
+  share: false
+
+logging:
+  level: "INFO"
+  log_dir: "logs"

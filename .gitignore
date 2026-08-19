@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project-specific
+outputs/
+calib_data/
+*.onnx
+!tests/fixtures/*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

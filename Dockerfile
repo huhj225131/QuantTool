@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     GRADIO_SERVER_NAME="0.0.0.0" \
     GRADIO_SERVER_PORT=7860
 
-# Cài đặt các thư viện hệ thống bổ sung (nếu cần)
+# Cài đặt các thư viện hệ thống bổ sung
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
@@ -20,10 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Thư mục làm việc
 WORKDIR /app
 
-# Copy requirements.txt để cache Docker layer
-COPY requirements.txt /app/
+# Đảm bảo cài đặt Gradio và các thư viện core UI/Config thành công
+RUN pip3 install --no-cache-dir gradio>=4.0 pyyaml>=6.0 tqdm>=4.65
 
-# Cài đặt các gói Python cần thiết (dustynv image đã có sẵn PyTorch, torchvision, opencv...)
+# Copy requirements.txt và cài đặt thêm các phụ thuộc khác (bỏ qua nếu đã tích hợp sẵn trong L4T image)
+COPY requirements.txt /app/
 RUN pip3 install --no-cache-dir -r requirements.txt || true
 
 # Copy source code và cấu hình

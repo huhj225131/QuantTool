@@ -57,36 +57,36 @@ pip install nvidia-modelopt[onnx]
 
 ---
 
-## 🐳 Đóng gói & Chạy bằng Docker
+## 🐳 Đóng gói & Chạy bằng Docker (Nhánh `jetson` - L4T r36.4.0)
 
-Để chuyển dự án sang máy khác chạy một cách nhanh chóng mà không cần cài đặt lại môi trường:
+Nhánh **`jetson`** được cấu hình sẵn base image **`dustynv/l4t-ml:r36.4.0`** (JetPack 6 / L4T r36.4.0) tối ưu cho các thiết bị **NVIDIA Jetson** (Orin Nano, Orin NX, AGX Orin) tích hợp sẵn CUDA, cuDNN, PyTorch và công cụ `trtexec`.
 
-### Cách 1: Sử dụng Docker Compose (Khuyên dùng)
+### Cách 1: Sử dụng Docker Compose trên Jetson (Khuyên dùng)
 
 ```bash
-# Build và chạy ứng dụng (hỗ trợ GPU NVIDIA)
+# Build và chạy ứng dụng trên thiết bị Jetson
 docker compose up -d --build
 
 # Xem log thực thi
-docker logs -f quant_tool_app
+docker logs -f quant_tool_jetson
 
 # Dừng container
 docker compose down
 ```
 
-### Cách 2: Sử dụng Docker CLI thủ công
+### Cách 2: Sử dụng Docker CLI thủ công trên Jetson
 
 ```bash
-# 1. Build image
-docker build -t quant_tool:latest .
+# 1. Build image từ dustynv/l4t-ml:r36.4.0
+docker build -t quant_tool:jetson-l4t-r36.4.0 .
 
-# 2. Chạy container với GPU support
-docker run -d --gpus all \
+# 2. Chạy container trên Jetson với runtime nvidia
+docker run -d --runtime nvidia \
   -p 7860:7860 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/logs:/app/logs \
-  --name quant_tool_app \
-  quant_tool:latest
+  --name quant_tool_jetson \
+  quant_tool:jetson-l4t-r36.4.0
 ```
 
 Mở trình duyệt truy cập: `http://localhost:7860`.

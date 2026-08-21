@@ -5,17 +5,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: quant_tool:latest
-    container_name: quant_tool_app
+    image: quant_tool:jetson-l4t-r36.4.0
+    container_name: quant_tool_jetson
+    runtime: nvidia
     ports:
       - "7860:7860"
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
-      # Mount các thư mục outputs và logs ra máy host
+      # Mount các thư mục outputs và logs ra máy host Jetson
       - ./outputs:/app/outputs
       - ./logs:/app/logs
-      # Bạn có thể bỏ comment dòng bên dưới để mount dữ liệu/models từ máy host vào container
+      # Bạn có thể bỏ comment dòng bên dưới để mount dữ liệu/models từ máy host Jetson vào container
       # - /path/to/host/data:/app/data
     deploy:
       resources:

@@ -20,12 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Thư mục làm việc
 WORKDIR /app
 
-# Đảm bảo cài đặt Gradio và các thư viện core UI/Config thành công
-RUN pip3 install --no-cache-dir gradio>=4.0 pyyaml>=6.0 tqdm>=4.65
+# Đảm bảo cài đặt Gradio và các thư viện core UI/Config từ PyPI chính thức
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple gradio>=4.0 pyyaml>=6.0 tqdm>=4.65
 
-# Copy requirements.txt và cài đặt thêm các phụ thuộc khác (bỏ qua nếu đã tích hợp sẵn trong L4T image)
+# Copy requirements.txt và cài đặt thêm các phụ thuộc khác từ PyPI
 COPY requirements.txt /app/
-RUN pip3 install --no-cache-dir -r requirements.txt || true
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple -r requirements.txt || true
 
 # Copy source code và cấu hình
 COPY setup.py /app/

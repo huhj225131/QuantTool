@@ -19,15 +19,18 @@
   - **Validator (Kiểm tra dữ liệu .npy / .npz)**: Đối chiếu shape, dtype, kiểm tra giá trị NaN/Inf và dải min/max/mean/std so với mô hình ONNX.
   - Tự động điền file `.npy` vừa tạo sang Tab Quantization.
 
-- ⚡ **Model Quantization (Tab 3)**:
-  - Tối ưu hóa mô hình bằng **NVIDIA ModelOpt** hỗ trợ các chế độ:
-    - **INT8**: Calibration method `max`, `entropy`, `minmax`.
-    - **FP8**: Dành cho GPU kiến trúc NVIDIA Ada Lovelace / Hopper.
-    - **INT4**: Thuật toán `awq_clip`, `rtn_dq` phù hợp băng thông bộ nhớ thấp (low-batch).
-  - **Tự động ánh xạ tên Node (Graph Input Mapping)**: Tự đọc đồ thị ONNX để map khớp tên input tensor (`input.1`, `images`,...) với mảng calibration data, loại bỏ lỗi lệch key.
-  - Hỗ trợ xuất mô hình lớn > 2GB (External Data format).
+- 🚀 **Quantization & TensorRT Engine Build (Tab 3)**:
+  - **Phần 1 - ONNX Model Quantization (NVIDIA ModelOpt)**:
+    - Tối ưu hóa mô hình bằng **NVIDIA ModelOpt** hỗ trợ các chế độ `INT8`, `FP8`, `INT4`.
+    - **Real-time Log Streaming**: Hiển thị trực tiếp log thực thi của quá trình quantize theo thời gian thực.
+    - **Tự động ánh xạ tên Node (Graph Input Mapping)**: Tự đọc đồ thị ONNX để map khớp tên input tensor với mảng calibration data.
+    - Tự động điền mô hình ONNX đã quantize sang Phần 2 bên dưới.
+  - **Phần 2 - TensorRT Engine Build (`trtexec`)**:
+    - Biên dịch mô hình ONNX (đặc biệt là mô hình ONNX đã quantize) sang định dạng **TensorRT Engine (`.engine`)** bằng công cụ `trtexec`.
+    - Hỗ trợ cờ `--stronglyTyped` (bắt buộc giữ nguyên kiểu dữ liệu quantize), `--fp16`, `--int8` và các cờ CLI bổ sung tùy chỉnh.
+    - **Real-time trtexec Execution Log**: Stream toàn bộ log tiến trình biên dịch engine từng dòng ngay trên màn hình.
 
-- 💡 **Smart Path Autocomplete**: Gõ đường dẫn trực tiếp trên ô nhập với gợi ý thả xuống (dropdown) ưu tiên các thư mục có chứa file mục tiêu (`.onnx`, `.npy`, ảnh thô).
+- 💡 **Smart Path Autocomplete**: Gõ đường dẫn trực tiếp trên ô nhập với gợi ý thả xuống (dropdown) ưu tiên các thư mục có chứa file mục tiêu (`.onnx`, `.npy`, `.engine`, ảnh thô).
 
 ---
 
@@ -35,8 +38,7 @@
 
 - **OS**: Linux (Ubuntu 20.04/22.04+ được khuyến nghị)
 - **Python**: 3.10+
-- **Conda** (khuyến nghị)
-- **Hardware**: GPU NVIDIA (khuyến nghị có CUDA/cuDNN cho tốc độ quantize tối ưu; hỗ trợ chạy CPU cho mô hình nhỏ).
+- **Hardware**: GPU NVIDIA (khuyến nghị có CUDA/cuDNN và TensorRT cho tốc độ quantize và build engine tối ưu).
 
 ---
 
@@ -115,9 +117,11 @@ Mở trình duyệt truy cập: `http://localhost:7860`.
 1. **Bước 1 (Inspect)**: Vào **Tab 1 (Model Inspector)** → Nhập/chọn file `.onnx` → Nhấn **Inspect Model** để xem cấu trúc và thông số Input (`Width`, `Height`, `Channel`, `Dtype`).
 2. **Bước 2 (Generate & Validate Calib Data)**: 
    - Vào **Tab 2 (Calibration Data)** → Mở **Accordion 1 (Generator)**.
-   - Chọn thư mục chứa ảnh thô, chỉnh các thông số Preprocessing (chọn Letterbox nếu là mô hình YOLO/Detection) → Nhấn **Tạo Dataset (.npy)**.
+   - Chọn thư mục chứa ảnh thô, chỉnh các thông số Preprocessing → Nhấn **Tạo Dataset (.npy)**.
    - Chuyển sang **Accordion 2 (Validator)** → Nhấn **Validate Data** để đảm bảo file `.npy` tương thích hoàn toàn với model.
-3. **Bước 3 (Quantize)**: Vào **Tab 3 (Quantization)** → Chọn `quantize_mode` (mặc định INT8) và `calibration_method` (`max` hoặc `entropy`) → Nhấn **Bắt đầu Quantize**. Mô hình xuất ra được lưu tại thư mục `outputs/` hoặc đường dẫn tùy chọn.
+3. **Bước 3 (Quantize ONNX & Build TensorRT Engine)**: Vào **Tab 3 (Quantization & Engine Build)**:
+   - **Phần 1**: Nhấn **Start ONNX Quantization** để quantize mô hình bằng `nvidia-modelopt`.
+   - **Phần 2**: Nhấn **Build TensorRT Engine** để biên dịch mô hình ONNX sang tệp `.engine` bằng `trtexec`. Quan sát log thực thi thời gian thực ở cả 2 bước.
 
 ---
 
@@ -130,16 +134,18 @@ quant_tool/
 │   ├── onnx_inspector.py     # Phân tích metadata & yêu cầu input mô hình ONNX
 │   ├── data_generator.py     # Tạo dataset calibration (.npy) qua OpenCV hoặc Python Script
 │   ├── data_validator.py     # Validate file .npy/.npz so với ONNX input
-│   ├── quantizer.py          # Wrapper chính cho NVIDIA ModelOpt Quantization
+│   ├── quantizer.py          # Wrapper cho NVIDIA ModelOpt ONNX Quantization & streaming log
+│   ├── engine_builder.py     # Wrapper biên dịch TensorRT Engine bằng trtexec & streaming log
 │   └── utils.py              # Tiện ích autocomplete đường dẫn thông minh, logging
 ├── ui/
-│   └── gradio_app.py         # Thiết kế giao diện người dùng (Gradio UI - Orange theme)
+│   └── gradio_app.py         # Thiết kế giao diện người dùng Gradio 3 Tabs (Orange theme)
 ├── configs/
 │   └── default_config.yaml   # Cấu hình tham số mặc định
-├── outputs/                  # Thư mục lưu mô hình đã quantize (.gitignored)
+├── outputs/                  # Thư mục lưu mô hình .onnx/.engine đã quantize (.gitignored)
 ├── requirements.txt          # Danh sách thư viện Python cần thiết
 ├── setup.py                  # Setup package
-├── CHANGELOG.md              # Nhật ký thay đổi qua từng phiên bản
+├── Dockerfile                # File đóng gói Docker Image với PyTorch & CUDA 12.1
+├── docker-compose.yml        # Docker Compose configuration cho GPU runtime
 └── README.md                 # Tài liệu hướng dẫn sử dụng
 ```
 

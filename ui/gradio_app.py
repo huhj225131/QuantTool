@@ -14,7 +14,8 @@ import gradio as gr
 
 from src.onnx_inspector import inspect_model, format_model_info_table
 from src.data_validator import validate_calibration_data, format_validation_result
-from src.quantizer import QuantConfig, quantize_model, check_modelopt_available
+from src.quantizer import QuantConfig, quantize_model, quantize_model_stream, check_modelopt_available
+from src.engine_builder import build_engine_trtexec_stream, find_trtexec_path
 from src.data_generator import (
     ImagePreprocessConfig,
     generate_calib_dataset_opencv,
@@ -74,6 +75,7 @@ def on_inspect_model(onnx_path):
             "",
             gr.update(),  # calib_model_path (Tab 2)
             gr.update(),  # quant_model_path (Tab 3)
+            gr.update(),  # engine_onnx_path (Tab 4)
             gr.update(),  # target_w (Tab 2)
             gr.update(),  # target_h (Tab 2)
             gr.update(),  # target_w_custom (Tab 2)
@@ -86,6 +88,7 @@ def on_inspect_model(onnx_path):
         return (
             f"❌ File không tồn tại: `{onnx_path}`",
             "",
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -115,19 +118,18 @@ def on_inspect_model(onnx_path):
         h_update = gr.update()
         if model_info["inputs"]:
             shape = model_info["inputs"][0]["shape"]
-            # ví dụ [1, 3, 640, 640] -> H=shape[2], W=shape[3] hoặc [1, 640, 640, 3] -> H=shape[1], W=shape[2]
             int_dims = [d for d in shape if isinstance(d, int)]
             if len(int_dims) >= 2:
-                # Thường H, W là 2 dims cuối hoặc 2 dims sau channel
                 h_val = int_dims[-2] if int_dims[-2] > 10 else int_dims[-1]
                 w_val = int_dims[-1] if int_dims[-1] > 10 else int_dims[-2]
                 w_update = gr.update(value=w_val)
                 h_update = gr.update(value=h_val)
 
-        # Tự động đồng bộ đường dẫn model sang Tab 2 và Tab 3
+        # Tự động đồng bộ đường dẫn model sang Tab 2, Tab 3 và Tab 4
         return (
             info_text,
             calib_text,
+            gr.update(value=onnx_path),
             gr.update(value=onnx_path),
             gr.update(value=onnx_path),
             w_update,
@@ -141,6 +143,7 @@ def on_inspect_model(onnx_path):
         return (
             f"❌ Lỗi khi đọc model: {e}",
             "",
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -316,23 +319,30 @@ def on_start_quantize(
     quantize_mode,
     calibration_method,
     output_path,
-    progress=gr.Progress(),
 ):
-    """Callback khi user bấm Start Quantization ở Tab 3."""
+    """Callback generator khi user bấm Start Quantization ở Tab 3.
+
+    Yields:
+        Tuple (log_text, status_markdown, sync_engine_onnx_path)
+    """
     if not onnx_path or not onnx_path.strip():
-        return "⚠️ Vui lòng nhập hoặc chọn đường dẫn file ONNX model"
+        yield "", "⚠️ Vui lòng nhập hoặc chọn đường dẫn file ONNX model", gr.update()
+        return
 
     if not calib_data_path or not calib_data_path.strip():
-        return "⚠️ Vui lòng nhập hoặc chọn đường dẫn calibration data"
+        yield "", "⚠️ Vui lòng nhập hoặc chọn đường dẫn calibration data", gr.update()
+        return
 
     onnx_path = onnx_path.strip()
     calib_data_path = calib_data_path.strip()
 
     if not os.path.exists(onnx_path):
-        return f"⚠️ File ONNX không tồn tại: `{onnx_path}`"
+        yield "", f"⚠️ File ONNX không tồn tại: `{onnx_path}`", gr.update()
+        return
 
     if not os.path.exists(calib_data_path):
-        return f"⚠️ File calibration data không tồn tại: `{calib_data_path}`"
+        yield "", f"⚠️ File calibration data không tồn tại: `{calib_data_path}`", gr.update()
+        return
 
     if not output_path.strip():
         output_path = "outputs/model_quantized.onnx"
@@ -345,18 +355,52 @@ def on_start_quantize(
         calibration_data_path=calib_data_path,
     )
 
-    def progress_callback(prog, msg):
-        progress(prog, desc=msg)
-
-    result = quantize_model(config, progress_callback=progress_callback)
-
-    return result["message"]
+    for logs, status in quantize_model_stream(config):
+        # Tự động đồng bộ đường dẫn ONNX xuất ra sang Tab 4 nếu thành công
+        sync_engine = gr.update(value=output_path.strip()) if "✅" in status else gr.update()
+        yield logs, status, sync_engine
 
 
 def on_check_modelopt():
     """Kiểm tra nvidia-modelopt có sẵn không."""
     available, msg = check_modelopt_available()
     return msg
+
+
+def on_check_trtexec(trtexec_bin_path: str):
+    """Kiểm tra công cụ trtexec có sẵn không."""
+    found, msg_or_path = find_trtexec_path(trtexec_bin_path)
+    if found:
+        return f"trtexec đã sẵn sàng tại: `{msg_or_path}` ✅"
+    else:
+        return msg_or_path
+
+
+def on_build_engine(
+    onnx_path: str,
+    output_engine_path: str,
+    trtexec_bin_path: str,
+    extra_args: str,
+):
+    """Callback generator khi user bấm Build TensorRT Engine.
+
+    Yields:
+        Tuple (log_text, status_markdown)
+    """
+    if not onnx_path or not onnx_path.strip():
+        yield "", "⚠️ Vui lòng nhập hoặc chọn đường dẫn file ONNX nguồn"
+        return
+
+    if not output_engine_path or not output_engine_path.strip():
+        output_engine_path = "outputs/model_quantized.engine"
+
+    for logs, status in build_engine_trtexec_stream(
+        onnx_path=onnx_path.strip(),
+        output_engine_path=output_engine_path.strip(),
+        extra_args=extra_args,
+        trtexec_path=trtexec_bin_path.strip() if trtexec_bin_path else None,
+    ):
+        yield logs, status
 
 
 def on_quant_mode_change(quant_mode):
@@ -624,102 +668,186 @@ def create_ui() -> gr.Blocks:
                     )
 
             # ═══════════════════════════════════════════════════════════
-            # TAB 3: Quantization
+            # TAB 3: Quantization & TensorRT Engine
             # ═══════════════════════════════════════════════════════════
-            with gr.TabItem("🚀 Quantization", id="tab_quant"):
-                gr.Markdown("### Cấu hình và chạy quantization")
+            with gr.TabItem("🚀 Quantization & Engine Build", id="tab_quant"):
+                gr.Markdown("### Quy trình Lượng tử hóa ONNX (NVIDIA ModelOpt) & Biên dịch TensorRT Engine (`trtexec`)")
 
-                # Check ModelOpt availability
-                with gr.Row():
-                    check_btn = gr.Button("🔧 Kiểm tra ModelOpt", size="sm")
-                    modelopt_status = gr.Textbox(
-                        label="Trạng thái ModelOpt",
+                # --- ACCORDION 1: ONNX Model Quantization ---
+                with gr.Accordion("⚡ 1. Quantize ONNX Model (NVIDIA ModelOpt)", open=True):
+                    with gr.Row():
+                        check_btn = gr.Button("🔧 Kiểm tra ModelOpt", size="sm")
+                        modelopt_status = gr.Textbox(
+                            label="Trạng thái ModelOpt",
+                            interactive=False,
+                            value="Chưa kiểm tra...",
+                        )
+
+                    with gr.Row():
+                        with gr.Column():
+                            quant_model_path = gr.Dropdown(
+                                choices=list_path_suggestions("", extensions=[".onnx"]),
+                                value="",
+                                label="📦 Đường dẫn ONNX Model gốc",
+                                info="Model cần quantize (tự động đồng bộ từ Tab 1 & Tab 2)",
+                                allow_custom_value=True,
+                                filterable=True,
+                            )
+
+                            quant_calib_path = gr.Dropdown(
+                                choices=list_path_suggestions("", extensions=[".npy", ".npz"]),
+                                value="",
+                                label="📊 Đường dẫn Calibration Data (.npy / .npz)",
+                                info="Dữ liệu calibration (tự động đồng bộ từ Tab 2 khi validate thành công)",
+                                allow_custom_value=True,
+                                filterable=True,
+                            )
+
+                        with gr.Column():
+                            quant_mode_dropdown = gr.Dropdown(
+                                choices=["int8", "fp8", "int4"],
+                                value="int8",
+                                label="Quantize Mode",
+                                info="int8: Phổ biến & cân bằng. fp8: Cho GPU Hopper/Ada (CC >= 8.9). int4: Weight-Only AWQ/RTN.",
+                            )
+
+                            calib_method_dropdown = gr.Dropdown(
+                                choices=["max", "entropy"],
+                                value="max",
+                                label="Calibration Method",
+                                info="max: khuyến nghị cho TensorRT. entropy: KL divergence calibration.",
+                            )
+
+                            quant_output_path = gr.Textbox(
+                                label="💾 Đường dẫn Output Model ONNX Quantized",
+                                value="outputs/model_quantized.onnx",
+                                info="Model đã quantize sẽ được lưu tại đây",
+                            )
+
+                    with gr.Accordion("📖 Hướng dẫn & Tối ưu hóa NVIDIA ModelOpt cho ONNX", open=False):
+                        gr.Markdown("""
+                        #### 🎯 Hướng dẫn lựa chọn chế độ Tối ưu (Quantization Schemes)
+
+                        - **`INT8`**:
+                          - **Calibration Method**: `max` (khuyến nghị cho TensorRT) hoặc `entropy` (KL divergence).
+                          - **Ứng dụng**: Phù hợp với đa số mô hình Vision (ResNet, YOLO, ViT...). Cân bằng tốt giữa tốc độ suy luận và độ chính xác.
+
+                        - **`FP8`**:
+                          - **Calibration Method**: `max` hoặc `entropy`.
+                          - **Yêu cầu Phần cứng**: Cần GPU thế hệ **NVIDIA Hopper** hoặc **Ada Lovelace** có Compute Capability $\ge 8.9$ (ví dụ: RTX 40xx series, H100, L40, L4).
+
+                        - **`INT4 (AWQ / RTN)`**:
+                          - **Calibration Method**: `awq_clip` (Activation-aware Weight Quantization) hoặc `rtn_dq` (Round-To-Nearest Dequantize).
+                          - **Ứng dụng**: **Weight-Only Quantization**. Rất hiệu quả cho **low-batch inference** nơi thời gian suy luận bị giới hạn bởi tốc độ đọc weights từ VRAM/RAM (memory bandwidth bound). Giúp giảm độ trễ thấp hơn FP8/INT8 ở batch nhỏ và bảo toàn độ chính xác tốt hơn INT8 thuần.
+
+                        ---
+                        #### 💻 Lệnh CLI tương đương:
+                        ```bash
+                        python -m modelopt.onnx.quantization \\
+                            --onnx_path=model.onnx \\
+                            --quantize_mode=<fp8|int8|int4> \\
+                            --calibration_data=calib.npy \\
+                            --calibration_method=<max|entropy|awq_clip|rtn_dq> \\
+                            --output_path=model.quant.onnx
+                        ```
+                        """)
+
+                    with gr.Row():
+                        quantize_btn = gr.Button(
+                            "⚡ Start ONNX Quantization",
+                            variant="primary",
+                            size="lg",
+                        )
+
+                    quant_log_box = gr.Textbox(
+                        lines=10,
+                        label="📜 Real-time Quantization Log (NVIDIA ModelOpt)",
+                        placeholder="Log thời gian thực sẽ hiển thị tại đây khi bắt đầu quantize...",
                         interactive=False,
-                        value="Chưa kiểm tra...",
+                        autoscroll=True,
+                    )
+
+                    quant_result = gr.Markdown(
+                        value="*Chưa chạy quantization...*",
+                        label="Kết quả Quantization",
                     )
 
                 gr.Markdown("---")
 
-                with gr.Row():
-                    with gr.Column():
-                        quant_model_path = gr.Dropdown(
-                            choices=list_path_suggestions("", extensions=[".onnx"]),
-                            value="",
-                            label="📦 Đường dẫn ONNX Model gốc",
-                            info="Model cần quantize (tự động đồng bộ từ Tab 1 & Tab 2)",
-                            allow_custom_value=True,
-                            filterable=True,
+                # --- ACCORDION 2: TensorRT Engine Build (trtexec) ---
+                with gr.Accordion("🛠️ 2. Biên dịch TensorRT Engine (.engine via trtexec)", open=True):
+                    with gr.Row():
+                        check_trtexec_btn = gr.Button("🔧 Kiểm tra trtexec", size="sm")
+                        trtexec_status = gr.Textbox(
+                            label="Trạng thái công cụ trtexec",
+                            interactive=False,
+                            value="Chưa kiểm tra...",
                         )
 
-                        quant_calib_path = gr.Dropdown(
-                            choices=list_path_suggestions("", extensions=[".npy", ".npz"]),
-                            value="",
-                            label="📊 Đường dẫn Calibration Data (.npy / .npz)",
-                            info="Dữ liệu calibration (tự động đồng bộ từ Tab 2 khi validate thành công)",
-                            allow_custom_value=True,
-                            filterable=True,
+                    with gr.Row():
+                        with gr.Column():
+                            engine_onnx_path = gr.Dropdown(
+                                choices=list_path_suggestions("", extensions=[".onnx"]),
+                                value="",
+                                label="📦 Đường dẫn ONNX Model Nguồn",
+                                info="Mô hình ONNX cần build Engine (tự động điền mô hình vừa quantize từ Phần 1)",
+                                allow_custom_value=True,
+                                filterable=True,
+                            )
+
+                            engine_output_path = gr.Textbox(
+                                label="💾 Đường dẫn Output TensorRT Engine (.engine)",
+                                value="outputs/model_quantized.engine",
+                                info="Tệp .engine xuất ra sẽ được lưu tại đây",
+                            )
+
+                            trtexec_bin_path = gr.Textbox(
+                                label="⚙️ Đường dẫn trtexec binary",
+                                value="/usr/src/tensorrt/bin/trtexec",
+                                info="Mặc định: /usr/src/tensorrt/bin/trtexec (tự tìm trong PATH nếu để trống)",
+                            )
+
+                        with gr.Column():
+                            gr.Markdown("#### ⚙️ Cấu hình cờ biên dịch trtexec")
+
+                            extra_args_txt = gr.Textbox(
+                                label="🛠️ Các cờ trtexec bổ sung tùy chọn (Extra CLI flags)",
+                                value="",
+                                placeholder="Ví dụ: --workspace=4096 --shapes=input:1x3x640x640",
+                                info="Tùy chỉnh thông số nâng cao như workspace size, dynamic shapes...",
+                            )
+
+                    with gr.Accordion("📖 Hướng dẫn sử dụng trtexec CLI", open=False):
+                        gr.Markdown("""
+                        #### 💻 Lệnh trtexec mặc định được thực thi:
+                        ```bash
+                        /usr/src/tensorrt/bin/trtexec \\
+                            --onnx=outputs/model_quantized.onnx \\
+                            --saveEngine=outputs/model_quantized.engine \\
+                            --stronglyTyped
+                        ```
+                        - Lệnh đã mặc định tự động bao gồm cờ **`--stronglyTyped`** để duy trì kiểu dữ liệu quantize của các node trong ONNX graph.
+                        """)
+
+                    with gr.Row():
+                        build_engine_btn = gr.Button(
+                            "🚀 Build TensorRT Engine",
+                            variant="primary",
+                            size="lg",
                         )
 
-                    with gr.Column():
-                        quant_mode_dropdown = gr.Dropdown(
-                            choices=["int8", "fp8", "int4"],
-                            value="int8",
-                            label="Quantize Mode",
-                            info="int8: Phổ biến & cân bằng. fp8: Cho GPU Hopper/Ada (CC >= 8.9). int4: Weight-Only AWQ/RTN.",
-                        )
-
-                        calib_method_dropdown = gr.Dropdown(
-                            choices=["max", "entropy"],
-                            value="max",
-                            label="Calibration Method",
-                            info="max: khuyến nghị cho TensorRT. entropy: KL divergence calibration.",
-                        )
-
-                        quant_output_path = gr.Textbox(
-                            label="💾 Đường dẫn Output Model",
-                            value="outputs/model_quantized.onnx",
-                            info="Model đã quantize sẽ được lưu tại đây",
-                        )
-
-                with gr.Accordion("📖 Hướng dẫn & Tối ưu hóa NVIDIA ModelOpt cho ONNX", open=False):
-                    gr.Markdown("""
-                    #### 🎯 Hướng dẫn lựa chọn chế độ Tối ưu (Quantization Schemes)
-
-                    - **`INT8`**:
-                      - **Calibration Method**: `max` (khuyến nghị cho TensorRT) hoặc `entropy` (KL divergence).
-                      - **Ứng dụng**: Phù hợp với đa số mô hình Vision (ResNet, YOLO, ViT...). Cân bằng tốt giữa tốc độ suy luận và độ chính xác.
-
-                    - **`FP8`**:
-                      - **Calibration Method**: `max` hoặc `entropy`.
-                      - **Yêu cầu Phần cứng**: Cần GPU thế hệ **NVIDIA Hopper** hoặc **Ada Lovelace** có Compute Capability $\ge 8.9$ (ví dụ: RTX 40xx series, H100, L40, L4).
-
-                    - **`INT4 (AWQ / RTN)`**:
-                      - **Calibration Method**: `awq_clip` (Activation-aware Weight Quantization) hoặc `rtn_dq` (Round-To-Nearest Dequantize).
-                      - **Ứng dụng**: **Weight-Only Quantization**. Rất hiệu quả cho **low-batch inference** nơi thời gian suy luận bị giới hạn bởi tốc độ đọc weights từ VRAM/RAM (memory bandwidth bound). Giúp giảm độ trễ thấp hơn FP8/INT8 ở batch nhỏ và bảo toàn độ chính xác tốt hơn INT8 thuần.
-
-                    ---
-                    #### 💻 Lệnh CLI tương đương:
-                    ```bash
-                    python -m modelopt.onnx.quantization \\
-                        --onnx_path=model.onnx \\
-                        --quantize_mode=<fp8|int8|int4> \\
-                        --calibration_data=calib.npy \\
-                        --calibration_method=<max|entropy|awq_clip|rtn_dq> \\
-                        --output_path=model.quant.onnx
-                    ```
-                    """)
-
-                with gr.Row():
-                    quantize_btn = gr.Button(
-                        "⚡ Start Quantization",
-                        variant="primary",
-                        size="lg",
+                    engine_log_box = gr.Textbox(
+                        lines=12,
+                        label="📜 Real-time trtexec Execution Log",
+                        placeholder="Log tiến trình biên dịch TensorRT engine sẽ được stream liên tục tại đây...",
+                        interactive=False,
+                        autoscroll=True,
                     )
 
-                quant_result = gr.Markdown(
-                    value="*Chưa chạy quantization...*",
-                    label="Kết quả Quantization",
-                )
+                    engine_result_display = gr.Markdown(
+                        value="*Chưa build TensorRT Engine...*",
+                        label="Kết quả Build Engine",
+                    )
 
         # ═══════════════════════════════════════════════════════════
         # Event handlers (Autocomplete trực tiếp trên Dropdown)
@@ -780,6 +908,13 @@ def create_ui() -> gr.Blocks:
             outputs=[quant_calib_path],
         )
 
+        # Tab 4: Autocomplete ONNX path
+        engine_onnx_path.input(
+            fn=suggest_onnx_paths,
+            inputs=[engine_onnx_path],
+            outputs=[engine_onnx_path],
+        )
+
         # Tab 2: Generator OpenCV action -> Sync generated .npy to Tab 2 Validator & Tab 3 Quantization
         gen_opencv_btn.click(
             fn=on_generate_opencv,
@@ -827,7 +962,7 @@ def create_ui() -> gr.Blocks:
             outputs=[calib_method_dropdown],
         )
 
-        # Inspect button (Tab 1) -> Trả về info + Sync model path & dimensions tới Tab 2 & 3
+        # Inspect button (Tab 1) -> Trả về info + Sync model path & dimensions tới Tab 2, Tab 3 & Tab 4
         inspect_btn.click(
             fn=on_inspect_model,
             inputs=[onnx_path_input],
@@ -836,6 +971,7 @@ def create_ui() -> gr.Blocks:
                 calib_req_display,
                 calib_model_path,
                 quant_model_path,
+                engine_onnx_path,
                 target_w,
                 target_h,
                 target_w_custom,
@@ -857,7 +993,7 @@ def create_ui() -> gr.Blocks:
             outputs=[modelopt_status],
         )
 
-        # Start quantization (Tab 3)
+        # Start quantization (Tab 3) -> Stream logs, Status & Sync ONNX output sang Tab 4
         quantize_btn.click(
             fn=on_start_quantize,
             inputs=[
@@ -867,7 +1003,26 @@ def create_ui() -> gr.Blocks:
                 calib_method_dropdown,
                 quant_output_path,
             ],
-            outputs=[quant_result],
+            outputs=[quant_log_box, quant_result, engine_onnx_path],
+        )
+
+        # Check trtexec (Tab 4)
+        check_trtexec_btn.click(
+            fn=on_check_trtexec,
+            inputs=[trtexec_bin_path],
+            outputs=[trtexec_status],
+        )
+
+        # Build TensorRT Engine (Tab 3 Accordion 2) -> Stream logs & Result
+        build_engine_btn.click(
+            fn=on_build_engine,
+            inputs=[
+                engine_onnx_path,
+                engine_output_path,
+                trtexec_bin_path,
+                extra_args_txt,
+            ],
+            outputs=[engine_log_box, engine_result_display],
         )
 
     # Lưu theme/css để truyền vào launch() (Gradio 6.0+ API)

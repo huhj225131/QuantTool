@@ -13,7 +13,7 @@ Hỗ trợ:
 import os
 import time
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Generator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -112,130 +112,170 @@ def check_modelopt_available() -> tuple[bool, str]:
         )
 
 
-def quantize_model(
+class QuantLogStreamer:
+    """Helper lưu vết log và stream cho Gradio UI."""
+
+    def __init__(self):
+        self.logs: list[str] = []
+
+    def log(self, msg: str) -> str:
+        self.logs.append(msg)
+        return "\n".join(self.logs)
+
+    def get_full_log(self) -> str:
+        return "\n".join(self.logs)
+
+
+def quantize_model_stream(
     config: QuantConfig,
-    progress_callback=None,
-) -> dict[str, Any]:
-    """Thực hiện quantization model ONNX bằng NVIDIA ModelOpt.
+) -> Generator[tuple[str, str], None, dict]:
+    """Generator thực hiện quantization model ONNX bằng NVIDIA ModelOpt và stream log liên tục.
 
     Args:
         config: QuantConfig chứa toàn bộ tham số.
-        progress_callback: Optional callable(progress_float, message_str)
-                          để cập nhật progress trên UI.
 
-    Returns:
-        Dict chứa success (bool), message (str), output_path, duration_seconds.
+    Yields:
+        Tuple (current_logs: str, status_summary: str)
     """
-    def _log(msg, progress=None):
+    streamer = QuantLogStreamer()
+
+    def _append(msg: str) -> str:
         logger.info(msg)
-        if progress_callback and progress is not None:
-            progress_callback(progress, msg)
+        return streamer.log(msg)
 
-    # Validate inputs
-    if not os.path.exists(config.onnx_path):
-        return {
-            "success": False,
-            "message": f"File ONNX không tồn tại: {config.onnx_path}",
-        }
+    # Attach custom logging handler để bắt log từ modelopt package
+    handler = logging.StreamHandler()
+    class _CustomStream:
+        def write(self, text):
+            if text and text.strip():
+                streamer.log(text.strip())
+        def flush(self):
+            pass
 
-    if not os.path.exists(config.calibration_data_path):
-        return {
-            "success": False,
-            "message": f"Calibration data không tồn tại: {config.calibration_data_path}",
-        }
-
-    # Check modelopt
-    available, avail_msg = check_modelopt_available()
-    if not available:
-        return {"success": False, "message": avail_msg}
-
-    # Import modelopt (đã kiểm tra ở trên)
-    import modelopt.onnx.quantization as moq
-
-    # Tạo output directory nếu chưa có
-    output_dir = os.path.dirname(config.output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    _log("🔄 Đang load và ánh xạ calibration data với ONNX graph input names...", 0.1)
+    # Attach handler to root & modelopt logger
+    custom_handler = logging.StreamHandler(_CustomStream())
+    custom_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    modelopt_logger = logging.getLogger("modelopt")
+    modelopt_logger.addHandler(custom_handler)
 
     try:
-        calib_data = _load_calibration_data(config.calibration_data_path, onnx_path=config.onnx_path)
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Lỗi khi load calibration data: {e}",
-        }
+        # Validate inputs
+        if not os.path.exists(config.onnx_path):
+            err_msg = f"⚠️ File ONNX không tồn tại: `{config.onnx_path}`"
+            curr_log = _append(err_msg)
+            yield curr_log, err_msg
+            return {"success": False, "message": err_msg}
 
-    _log(f"📊 Calibration data loaded & mapped keys: {list(calib_data.keys())}", 0.2)
-    _log(f"⚙️ Bắt đầu quantize (mode={config.quantize_mode}, method={config.calibration_method})...", 0.3)
+        if not os.path.exists(config.calibration_data_path):
+            err_msg = f"⚠️ File calibration data không tồn tại: `{config.calibration_data_path}`"
+            curr_log = _append(err_msg)
+            yield curr_log, err_msg
+            return {"success": False, "message": err_msg}
 
-    start_time = time.time()
+        # Check modelopt
+        available, avail_msg = check_modelopt_available()
+        if not available:
+            curr_log = _append(avail_msg)
+            yield curr_log, avail_msg
+            return {"success": False, "message": avail_msg}
 
-    try:
-        # Pass exact arguments matching official ModelOpt Python API:
-        # quantize(onnx_path=..., quantize_mode=..., calibration_data=calib_data_dict, calibration_method=..., output_path=...)
+        import modelopt.onnx.quantization as moq
+
+        output_dir = os.path.dirname(config.output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        curr_log = _append("🔄 Đang load và ánh xạ calibration data với ONNX graph input names...")
+        yield curr_log, "⏳ Đang chuẩn bị dữ liệu calibration..."
+
+        try:
+            calib_data = _load_calibration_data(config.calibration_data_path, onnx_path=config.onnx_path)
+        except Exception as e:
+            err_msg = f"❌ Lỗi khi load calibration data: {e}"
+            curr_log = _append(err_msg)
+            yield curr_log, err_msg
+            return {"success": False, "message": err_msg}
+
+        curr_log = _append(f"📊 Calibration data loaded & mapped keys: {list(calib_data.keys())}")
+        curr_log = _append(f"⚙️ Khởi tạo ModelOpt Quantizer (mode={config.quantize_mode}, method={config.calibration_method})...")
+        yield curr_log, "⏳ Đang thực thi NVIDIA ModelOpt Quantization..."
+
+        start_time = time.time()
+
         quantize_kwargs = {
             "onnx_path": config.onnx_path,
             "quantize_mode": config.quantize_mode,
-            "calibration_data": calib_data,  # Dict mapping exact model input names (e.g. {"input.1": array})
+            "calibration_data": calib_data,
             "calibration_method": config.calibration_method,
             "output_path": config.output_path,
         }
 
-        # Op types to quantize (nếu có cấu hình riêng)
         if config.op_types_to_quantize:
             quantize_kwargs["op_types_to_quantize"] = config.op_types_to_quantize
 
-        _log(
+        curr_log = _append(
             f"🚀 Đang chạy moq.quantize("
             f"onnx_path='{config.onnx_path}', "
             f"quantize_mode='{config.quantize_mode}', "
             f"calibration_data={list(calib_data.keys())}, "
             f"calibration_method='{config.calibration_method}', "
-            f"output_path='{config.output_path}')",
-            0.5,
+            f"output_path='{config.output_path}')"
         )
+        yield curr_log, "⏳ NVIDIA ModelOpt đang tính toán calibration & quantize nodes..."
 
         moq.quantize(**quantize_kwargs)
 
         duration = time.time() - start_time
 
-        _log(f"✅ Quantization hoàn thành trong {duration:.1f}s!", 1.0)
+        curr_log = _append(f"✅ Quantization hoàn thành trong {duration:.1f}s!")
 
-        # Kiểm tra output file
         if os.path.exists(config.output_path):
             output_size_mb = os.path.getsize(config.output_path) / (1024 * 1024)
             input_size_mb = os.path.getsize(config.onnx_path) / (1024 * 1024)
             compression = (1 - output_size_mb / input_size_mb) * 100 if input_size_mb > 0 else 0
 
+            success_msg = (
+                f"✅ **Quantization thành công!**\n"
+                f"- **Output**: `{config.output_path}`\n"
+                f"- **Kích thước gốc**: `{input_size_mb:.2f} MB`\n"
+                f"- **Kích thước sau quantize**: `{output_size_mb:.2f} MB` (giảm {compression:.1f}%)\n"
+                f"- **Thời gian thực thi**: `{duration:.1f}s`"
+            )
+            curr_log = _append(f"\n🎉 SUCCESS: Quantized ONNX saved to {config.output_path} ({output_size_mb:.2f} MB)")
+            yield curr_log, success_msg
             return {
                 "success": True,
-                "message": (
-                    f"✅ Quantization thành công!\n"
-                    f"- Output: {config.output_path}\n"
-                    f"- Kích thước gốc: {input_size_mb:.2f} MB\n"
-                    f"- Kích thước sau quantize: {output_size_mb:.2f} MB\n"
-                    f"- Giảm: {compression:.1f}%\n"
-                    f"- Thời gian: {duration:.1f}s"
-                ),
+                "message": success_msg,
                 "output_path": config.output_path,
                 "duration_seconds": duration,
-                "original_size_mb": input_size_mb,
-                "quantized_size_mb": output_size_mb,
-                "compression_percent": compression,
             }
         else:
-            return {
-                "success": False,
-                "message": "Quantization hoàn thành nhưng không tìm thấy file output",
-            }
+            fail_msg = "❌ Quantization hoàn thành nhưng không tìm thấy file output"
+            curr_log = _append(fail_msg)
+            yield curr_log, fail_msg
+            return {"success": False, "message": fail_msg}
 
     except Exception as e:
         duration = time.time() - start_time
+        err_msg = f"❌ Lỗi trong quá trình quantization:\n{type(e).__name__}: {e}"
         logger.exception("Quantization failed")
-        return {
-            "success": False,
-            "message": f"❌ Lỗi trong quá trình quantization:\n{type(e).__name__}: {e}",
-            "duration_seconds": duration,
-        }
+        curr_log = _append(f"\n💥 EXCEPTION: {err_msg}")
+        yield curr_log, err_msg
+        return {"success": False, "message": err_msg}
+
+    finally:
+        modelopt_logger.removeHandler(custom_handler)
+
+
+def quantize_model(
+    config: QuantConfig,
+    progress_callback=None,
+) -> dict[str, Any]:
+    """Wrapper tương thích ngược cho quantize_model (không stream)."""
+    last_log = ""
+    last_status = ""
+    for curr_log, curr_status in quantize_model_stream(config):
+        last_log = curr_log
+        last_status = curr_status
+    return {"success": "✅" in last_status, "message": last_status, "log": last_log}
+

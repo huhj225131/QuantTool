@@ -6,7 +6,8 @@ FROM dustynv/l4t-ml:r36.4.0
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     GRADIO_SERVER_NAME="0.0.0.0" \
-    GRADIO_SERVER_PORT=7860
+    GRADIO_SERVER_PORT=7860 \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 # Cài đặt các thư viện hệ thống bổ sung
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   quant_tool:
     build:
@@ -12,6 +10,7 @@ services:
       - "7860:7860"
     environment:
       - PYTHONUNBUFFERED=1
+      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
     volumes:
       # Mount các thư mục outputs và logs ra máy host Jetson
       - ./outputs:/app/outputs

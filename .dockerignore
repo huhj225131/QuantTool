@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+outputs/
+logs/
+.env
+.venv/
+venv/
+*.onnx
+*.npy
+*.npz

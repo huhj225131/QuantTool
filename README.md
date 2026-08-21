@@ -55,6 +55,42 @@ pip install nvidia-modelopt[onnx]
 
 ---
 
+## 🐳 Đóng gói & Chạy bằng Docker
+
+Để chuyển dự án sang máy khác chạy một cách nhanh chóng mà không cần cài đặt lại môi trường:
+
+### Cách 1: Sử dụng Docker Compose (Khuyên dùng)
+
+```bash
+# Build và chạy ứng dụng (hỗ trợ GPU NVIDIA)
+docker compose up -d --build
+
+# Xem log thực thi
+docker logs -f quant_tool_app
+
+# Dừng container
+docker compose down
+```
+
+### Cách 2: Sử dụng Docker CLI thủ công
+
+```bash
+# 1. Build image
+docker build -t quant_tool:latest .
+
+# 2. Chạy container với GPU support
+docker run -d --gpus all \
+  -p 7860:7860 \
+  -v $(pwd)/outputs:/app/outputs \
+  -v $(pwd)/logs:/app/logs \
+  --name quant_tool_app \
+  quant_tool:latest
+```
+
+Mở trình duyệt truy cập: `http://localhost:7860`.
+
+---
+
 ## 🚀 Hướng dẫn sử dụng
 
 Chạy ứng dụng Gradio:

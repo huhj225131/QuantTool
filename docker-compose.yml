@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  quant_tool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: quant_tool:latest
+    container_name: quant_tool_app
+    ports:
+      - "7860:7860"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount các thư mục outputs và logs ra máy host
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      # Bạn có thể bỏ comment dòng bên dưới để mount dữ liệu/models từ máy host vào container
+      # - /path/to/host/data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

@@ -313,12 +313,28 @@ def on_load_sample_script():
     return get_sample_custom_script(), "✅ Đã nạp lại mẫu code Python chuẩn"
 
 
+def on_export_target_change(target_val):
+    """Tự động đổi nhãn và đường dẫn output theo lựa chọn format."""
+    if "TensorRT Engine" in target_val:
+        return gr.update(
+            value="outputs/model_quantized.engine",
+            label="💾 Đường dẫn Output TensorRT Engine (.engine)",
+        )
+    else:
+        return gr.update(
+            value="outputs/model_quantized.onnx",
+            label="💾 Đường dẫn Output Model ONNX Quantized (.onnx)",
+        )
+
+
 def on_start_quantize(
     onnx_path,
     calib_data_path,
     quantize_mode,
     calibration_method,
     output_path,
+    export_target,
+    trtexec_bin_path,
 ):
     """Callback generator khi user bấm Start Quantization ở Tab 3.
 
@@ -344,21 +360,56 @@ def on_start_quantize(
         yield "", f"⚠️ File calibration data không tồn tại: `{calib_data_path}`", gr.update()
         return
 
+    is_direct_engine = "TensorRT Engine" in export_target
+
     if not output_path.strip():
-        output_path = "outputs/model_quantized.onnx"
+        output_path = "outputs/model_quantized.engine" if is_direct_engine else "outputs/model_quantized.onnx"
+
+    if is_direct_engine:
+        onnx_out_path = output_path.replace(".engine", ".onnx") if output_path.endswith(".engine") else output_path
+        engine_out_path = output_path if output_path.endswith(".engine") else output_path.replace(".onnx", ".engine")
+    else:
+        onnx_out_path = output_path
+        engine_out_path = output_path.replace(".onnx", ".engine") if output_path.endswith(".onnx") else output_path + ".engine"
 
     config = QuantConfig(
         onnx_path=onnx_path,
-        output_path=output_path.strip(),
+        output_path=onnx_out_path.strip(),
         quantize_mode=quantize_mode,
         calibration_method=calibration_method,
         calibration_data_path=calib_data_path,
     )
 
+    accumulated_log = ""
+    onnx_success = False
+
+    # BƯỚC 1: ONNX Quantization bằng NVIDIA ModelOpt
     for logs, status in quantize_model_stream(config):
-        # Tự động đồng bộ đường dẫn ONNX xuất ra sang Tab 4 nếu thành công
-        sync_engine = gr.update(value=output_path.strip()) if "✅" in status else gr.update()
-        yield logs, status, sync_engine
+        accumulated_log = logs
+        onnx_success = "✅" in status
+        sync_engine = gr.update(value=onnx_out_path.strip()) if onnx_success else gr.update()
+        yield accumulated_log, status, sync_engine
+
+    # BƯỚC 2: Tự động Build TensorRT Engine nếu người dùng chọn "Xuất thẳng ra TensorRT Engine"
+    if is_direct_engine and onnx_success:
+        step2_header = (
+            f"\n\n{'='*60}\n"
+            f"🚀 [TỰ ĐỘNG BƯỚC 2] Khởi chạy trtexec để build TensorRT Engine...\n"
+            f"📌 ONNX Source: {onnx_out_path}\n"
+            f"📌 Engine Target: {engine_out_path}\n"
+            f"{'='*60}\n"
+        )
+        accumulated_log += step2_header
+        yield accumulated_log, "⏳ Đang khởi chạy trtexec build TensorRT Engine...", gr.update(value=onnx_out_path.strip())
+
+        for trt_logs, trt_status in build_engine_trtexec_stream(
+            onnx_path=onnx_out_path.strip(),
+            output_engine_path=engine_out_path.strip(),
+            extra_args="",
+            trtexec_path=trtexec_bin_path.strip() if trtexec_bin_path else None,
+        ):
+            combined_log = accumulated_log + "\n" + trt_logs
+            yield combined_log, trt_status, gr.update(value=onnx_out_path.strip())
 
 
 def on_check_modelopt():
@@ -703,6 +754,16 @@ def create_ui() -> gr.Blocks:
                                 filterable=True,
                             )
 
+                            export_target_radio = gr.Radio(
+                                choices=[
+                                    "Chỉ xuất file ONNX Quantized (.onnx)",
+                                    "Xuất thẳng ra TensorRT Engine (.engine) (Quantize ONNX + Build Engine)",
+                                ],
+                                value="Chỉ xuất file ONNX Quantized (.onnx)",
+                                label="🎯 Định dạng đầu ra mong muốn (Export Target)",
+                                info="Chọn chỉ quantize ra file ONNX hoặc thực thi tự động cả 2 bước (Quantize ONNX -> Build Engine)",
+                            )
+
                         with gr.Column():
                             quant_mode_dropdown = gr.Dropdown(
                                 choices=["int8", "fp8", "int4"],
@@ -719,9 +780,9 @@ def create_ui() -> gr.Blocks:
                             )
 
                             quant_output_path = gr.Textbox(
-                                label="💾 Đường dẫn Output Model ONNX Quantized",
+                                label="💾 Đường dẫn Output Model ONNX Quantized (.onnx)",
                                 value="outputs/model_quantized.onnx",
-                                info="Model đã quantize sẽ được lưu tại đây",
+                                info="Tệp mô hình đã quantize/build engine sẽ được lưu tại đây",
                             )
 
                     with gr.Accordion("📖 Hướng dẫn & Tối ưu hóa NVIDIA ModelOpt cho ONNX", open=False):
@@ -986,6 +1047,13 @@ def create_ui() -> gr.Blocks:
             outputs=[validation_result, quant_calib_path],
         )
 
+        # Dynamic export target -> thay đổi nhãn & output path
+        export_target_radio.change(
+            fn=on_export_target_change,
+            inputs=[export_target_radio],
+            outputs=[quant_output_path],
+        )
+
         # Check modelopt (Tab 3)
         check_btn.click(
             fn=on_check_modelopt,
@@ -993,7 +1061,7 @@ def create_ui() -> gr.Blocks:
             outputs=[modelopt_status],
         )
 
-        # Start quantization (Tab 3) -> Stream logs, Status & Sync ONNX output sang Tab 4
+        # Start quantization (Tab 3) -> Stream logs, Status & Sync ONNX output sang Phần 2 Engine Build
         quantize_btn.click(
             fn=on_start_quantize,
             inputs=[
@@ -1002,6 +1070,8 @@ def create_ui() -> gr.Blocks:
                 quant_mode_dropdown,
                 calib_method_dropdown,
                 quant_output_path,
+                export_target_radio,
+                trtexec_bin_path,
             ],
             outputs=[quant_log_box, quant_result, engine_onnx_path],
         )
